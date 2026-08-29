@@ -1,2 +1,1 @@
-# blender-vortex
-Extension to load playvortex.io avatars into blender.
+# ill upload everything soon let me record a couple screenshots
