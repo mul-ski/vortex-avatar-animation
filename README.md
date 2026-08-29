@@ -23,7 +23,11 @@ Targets Blender 5.2+  (Tested only on Windows)
 2. Import the downloaded .zip file by selecting it from (User) Preferences/Addons/Install from File
 3. Use the addon.
 
+## How to use:
 
+Export is kinda unintuitive, FIRST SELECT EVERYTHING BEFORE CLICKING EXPORT
+
+Everything else can be figured out easily.
 
 ## TODO
 
