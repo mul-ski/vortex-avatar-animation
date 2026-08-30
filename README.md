@@ -31,6 +31,7 @@ Everything else can be figured out easily.
 
 ## TODO
 
+- Groups are not suppported.
 - Add `.vrtx` project file support.
 - Materials ORM textures are set up wrong. I don't know real names of the textures.
 - Imported parts UV scale is wrong.
