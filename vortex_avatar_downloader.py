@@ -5,8 +5,11 @@ import bpy
 import base64
 import os
 from . import constants
+from . import vortex_ik
 
 # CONSTANTS
+
+VORTEX_SHAPES_COLLECTION_NAME = "VORTEX_SHAPES"
 
 # print(requests.get("https://playvortex.io/api/users/outfits?ids=95964").json())
 
@@ -304,6 +307,91 @@ def _remove_template_collection(collection):
             bpy.data.materials.remove(material)
 
 
+def _ensure_custom_shapes_in_view_layer(armature):
+    """
+    Link custom bone shape objects into a hidden collection in the scene.
+
+    Pose bone custom shapes are only evaluated (and therefore only drawn)
+    when their object is part of the view layer. The template keeps the
+    shapes outside the temporary RIGS collection so they are not deleted
+    with it, which means they arrive here unlinked. Adding them to a
+    hidden-but-evaluated collection makes the rig display its gem shapes
+    without adding visible helper objects to the scene.
+    """
+
+    shapes = {
+        pose_bone.custom_shape
+        for pose_bone in armature.pose.bones
+        if pose_bone.custom_shape is not None
+    }
+
+    if not shapes:
+        return
+
+    scene = bpy.context.scene
+    shape_collection = bpy.data.collections.get(
+        VORTEX_SHAPES_COLLECTION_NAME
+    )
+
+    if shape_collection is None:
+        shape_collection = bpy.data.collections.new(
+            VORTEX_SHAPES_COLLECTION_NAME
+        )
+        scene.collection.children.link(shape_collection)
+
+    # Hide the collection in the viewport, but keep it included so the
+    # shape objects are still evaluated by the depsgraph.
+    layer_collection = bpy.context.view_layer.layer_collection.children.get(
+        shape_collection.name
+    )
+
+    if layer_collection is not None:
+        layer_collection.hide_viewport = True
+
+    for shape in shapes:
+
+        if shape_collection not in shape.users_collection:
+            shape_collection.objects.link(shape)
+
+        # Custom shapes are helpers: never render or select them, but do
+        # not disable the object itself (that removes it from evaluation).
+        shape.hide_render = True
+        shape.hide_select = True
+        shape.hide_viewport = False
+
+        try:
+            shape.hide_set(True)
+        except RuntimeError:
+            pass
+
+
+def _remove_unused_custom_shapes():
+    """Drop custom shape objects left behind by deleted avatars."""
+
+    shape_collection = bpy.data.collections.get(
+        VORTEX_SHAPES_COLLECTION_NAME
+    )
+
+    if shape_collection is None:
+        return
+
+    for obj in list(shape_collection.objects):
+
+        # Collection membership itself counts as a user, so unlink first
+        # and only delete the object when nothing else references it.
+        shape_collection.objects.unlink(obj)
+
+        if obj.users != 0:
+            shape_collection.objects.link(obj)
+            continue
+
+        mesh = obj.data
+        bpy.data.objects.remove(obj, do_unlink=True)
+
+        if mesh is not None and mesh.users == 0:
+            bpy.data.meshes.remove(mesh)
+
+
 def spawn_character(armature_name="VORTEXIAN_RIG_MALE"):
     """
     Spawn a character from the bundled template .blend file.
@@ -432,6 +520,30 @@ def spawn_character(armature_name="VORTEXIAN_RIG_MALE"):
                         modifier.object = new_armature
 
         # ---------------------------------------------------------
+        # Point copied constraints at the new armature.
+        # ---------------------------------------------------------
+
+        for pose_bone in new_armature.pose.bones:
+
+            for constraint in pose_bone.constraints:
+
+                if getattr(constraint, "target", None) == armature:
+                    constraint.target = new_armature
+
+        # ---------------------------------------------------------
+        # Leg IK mode.
+        # ---------------------------------------------------------
+
+        use_ik = bool(getattr(bpy.context.scene, "vortex_use_ik", False))
+
+        vortex_ik.apply_ik(new_armature, use_ik, bake=False)
+
+        try:
+            new_armature.vortex_use_ik = vortex_ik.ik_enabled(new_armature)
+        except AttributeError:
+            pass
+
+        # ---------------------------------------------------------
         # Spawn at 3D cursor.
         # ---------------------------------------------------------
 
@@ -441,6 +553,12 @@ def spawn_character(armature_name="VORTEXIAN_RIG_MALE"):
 
         offset = cursor_location - new_armature.location
         new_armature.location += offset
+
+        # ---------------------------------------------------------
+        # Make the custom bone shapes drawable.
+        # ---------------------------------------------------------
+
+        _ensure_custom_shapes_in_view_layer(new_armature)
 
         # ---------------------------------------------------------
         # Select spawned character.
@@ -471,6 +589,8 @@ def spawn_character(armature_name="VORTEXIAN_RIG_MALE"):
                 _remove_template_collection(
                     template_collection
                 )
+
+        _remove_unused_custom_shapes()
 
 
 def spawn_user(user_id=95964):

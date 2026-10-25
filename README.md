@@ -16,6 +16,8 @@ Targets Blender 5.2+  (Tested only on Windows)
 
 - Import Vortex Json place file.
 - Export Vortex Json place file. (It assumes all objects are scaled cubes.)
+- Reference-style animation rig, matching the official Vortex rig.
+- Optional leg IK, switched with a checkbox in the sidebar (FK by default).
 
 ## Installation:
 
@@ -28,6 +30,15 @@ Targets Blender 5.2+  (Tested only on Windows)
 Export is kinda unintuitive, FIRST SELECT EVERYTHING BEFORE CLICKING EXPORT
 
 Everything else can be figured out easily.
+
+### Leg IK
+
+The **Inverse Kinematics (Legs)** checkbox under the User Id field switches the selected avatar between FK and IK; with nothing selected it sets the default for the next avatar. It is off by default, because imported Vortex animations key the leg bones.
+
+- IK off: the `LeftIK` / `RightIK` foot gems follow the legs.
+- IK on: dragging the gems moves the legs, and rotating the leg bones directly is ignored.
+
+The legs are single bones (no knees), so the gems **aim** the legs: the foot lands on its gem only while the gem stays within one leg length of the hip. Switching modes bakes the current pose, so the legs never snap. Avatars loaded with an older version of the addon have to be loaded again to use IK.
 
 ## TODO
 
