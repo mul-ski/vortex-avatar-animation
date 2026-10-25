@@ -55,5 +55,10 @@ The legs are single bones (no knees), so the gems **aim** the legs: the foot lan
 ![Dancing Vortex character](github/california_gurls.gif)
 
 
+## Credits
+
+The reference rig layout (joint gems, master gizmo, bone colors) is based on a rig by goosy (agooessenoria).
+
+
 ## pls contribute smth
 
