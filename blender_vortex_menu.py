@@ -10,14 +10,59 @@ from .vortex_avatar_downloader import spawn_user
 # IK toggle callbacks
 # ---------------------------------------------------------------------------
 
-def _active_rig(context):
-    obj = context.view_layer.objects.active
+def _rig_for_object(obj):
+    """Return the Vortex rig that owns ``obj``, if there is one.
 
-    if obj is None:
-        obj = context.active_object
+    Bodies have an Armature modifier and accessories are bone-parented, so
+    clicking either of them in the viewport should still find the rig that
+    the IK checkbox belongs to.
+    """
 
-    if vortex_ik.is_vortex_rig(obj):
-        return obj
+    seen = set()
+
+    while obj is not None and obj.name not in seen:
+        if vortex_ik.is_vortex_rig(obj):
+            return obj
+
+        seen.add(obj.name)
+
+        for modifier in getattr(obj, "modifiers", ()):
+            if modifier.type == "ARMATURE":
+                if vortex_ik.is_vortex_rig(modifier.object):
+                    return modifier.object
+
+        obj = obj.parent
+
+    return None
+
+
+def _context_rig(context):
+    """The rig the IK checkbox should control, if the selection has one.
+
+    The active object wins.  Otherwise a single selected rig, or the rig
+    behind a selected body/accessory, is used.  With nothing selected (or
+    with several different rigs in the selection) the checkbox falls back to
+    the scene default for the next avatar.
+    """
+
+    view_layer = context.view_layer
+    active = view_layer.objects.active if view_layer is not None else None
+
+    rig = _rig_for_object(active)
+
+    if rig is not None:
+        return rig
+
+    rigs = []
+
+    for obj in context.selected_objects:
+        candidate = _rig_for_object(obj)
+
+        if candidate is not None and candidate not in rigs:
+            rigs.append(candidate)
+
+    if len(rigs) == 1:
+        return rigs[0]
 
     return None
 
@@ -90,7 +135,7 @@ class VORTEXLOADER_PT_avatar_downloader(bpy.types.Panel):
             text="User Id",
         )
 
-        rig = _active_rig(context)
+        rig = _context_rig(context)
         old_layout = rig is not None and not vortex_ik.supports_ik(rig)
 
         if old_layout:
