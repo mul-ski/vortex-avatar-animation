@@ -2,7 +2,7 @@
 bl_info = {
     "name": "Vortex Loader",
     "blender": (5, 2, 0),
-    "version": (0, 0, 11),
+    "version": (0, 0, 12),
     "category": "Object",
 }
 
