@@ -2,41 +2,76 @@
 import bpy
 import json
 import uuid
-from mathutils import Matrix,Quaternion
-import math
+from mathutils import Matrix
 
 
 # =========================================================
 # Coordinate conversion
+#
+# The place JSON is Y-up with -Z forward, Blender is Z-up with
+# -Y forward. This is the exact inverse of the import conversion:
+#
+#     Blender = SOURCE_TO_BLENDER @ Source
+#     Source  = SOURCE_FROM_BLENDER @ Blender
 # =========================================================
 
-AXIS_CONVERSION = Matrix((
-    (-1, 0, 0),
+SOURCE_FROM_BLENDER = Matrix((
+    (1, 0, 0),
     (0, 0, 1),
-    (0, 1, 0),
+    (0, -1, 0),
 ))
 
 
 def convert_position(location):
-    return AXIS_CONVERSION @ location
+    return SOURCE_FROM_BLENDER @ location
 
 
 def convert_rotation(quaternion):
     """
     Convert a Blender rotation into the target coordinate system.
 
-    R_target = C * R_blender * C^-1
+    R_target = C^-1 * R_blender * C
     """
 
     blender_rotation = quaternion.to_matrix()
 
     target_rotation = (
-        AXIS_CONVERSION
+        SOURCE_FROM_BLENDER
         @ blender_rotation
-        @ AXIS_CONVERSION.inverted()
+        @ SOURCE_FROM_BLENDER.inverted()
     )
 
     return target_rotation.to_quaternion()
+
+
+def get_json_property(obj, name, default=None):
+    """
+    Read a custom property that came from the JSON file.
+
+    Lists of strings are stored directly, but values Blender cannot
+    represent are stored as JSON text, so decode those again.
+    """
+
+    if name not in obj:
+        return default
+
+    value = obj[name]
+
+    if isinstance(value, str):
+        # Only decode values the importer had to store as JSON text.
+        # A plain string such as a group name may look like a number.
+        if value.strip()[:1] not in ("[", "{"):
+            return value
+
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            return value
+
+    try:
+        return list(value)
+    except TypeError:
+        return value
 
 
 def get_color(obj):
@@ -130,8 +165,8 @@ def export_object(obj):
     color = get_color(obj)
 
     # Match a material name against the supported names.
-    material_keywords = ("Plastic", "Paint", "Metal",
-                         "Wood", "Grass", "Smooth")
+    material_keywords = ("Plastic", "Paint", "Metal", "Wood",
+                         "Grass", "Ice", "Brick", "Sand", "Smooth")
 
     material = "Plastic"
 
@@ -169,8 +204,16 @@ def export_object(obj):
     can_collide = bool(obj.get("can_collide", True))
     spawn_location = bool(obj.get("spawn_location", False))
     baseplate = bool(obj.get("baseplate", False))
-    custom_appearance = bool(obj.get("custom_appearance", False))
+    custom_appearance = bool(
+        obj.get(
+            "custom_appearance",
+            # Property name used by older imports.
+            obj.get("custom_appearence", False),
+        )
+    )
     truss = bool(obj.get("truss", False))
+    group = get_json_property(obj, "group")
+    textures = get_json_property(obj, "textures", [])
 
     # -----------------------------------------------------
     # JSON object
@@ -197,7 +240,7 @@ def export_object(obj):
         "color": color,
 
         "material": material,
-        "group": None,
+        "group": group,
         "cast_shadow": cast_shadow,
         "anchored": anchored,
         "can_collide": can_collide,
@@ -205,7 +248,7 @@ def export_object(obj):
         "baseplate": baseplate,
         "custom_appearance": custom_appearance,
         "truss": truss,
-        "textures": [],
+        "textures": textures,
     }
 
 
@@ -310,6 +353,25 @@ def get_sun_info():
     result["sun_color"] = color_to_rgba(sun_data.color)
 
     # -----------------------------------------------------
+    # Ambient light and brightness
+    #
+    # The importer stores the original values as custom
+    # properties, because Blender has no direct equivalent.
+    # -----------------------------------------------------
+
+    ambient = sun.get("vortex_ambient_color")
+
+    if ambient is not None and len(ambient) >= 3:
+        result["ambient_color"] = {
+            "r": float(ambient[0]),
+            "g": float(ambient[1]),
+            "b": float(ambient[2]),
+            "a": float(ambient[3]) if len(ambient) > 3 else 1.0,
+        }
+
+    brightness = sun.get("vortex_brightness")
+
+    # -----------------------------------------------------
     # Sun shadow maps
     # -----------------------------------------------------
 
@@ -321,7 +383,7 @@ def get_sun_info():
     # Use the Blender object's world-space quaternion.
     # -----------------------------------------------------
 
-    rotation = convert_rotation(sun.matrix_world.to_quaternion()) @ Quaternion((1, 0, 0), math.radians(-90))
+    rotation = convert_rotation(sun.matrix_world.to_quaternion())
 
     result["sun_rotation"] = {
         "x": float(rotation.x),
@@ -330,14 +392,58 @@ def get_sun_info():
         "w": float(rotation.w),
     }
 
-    # fak ai
-
     result["sun_illuminance"] = float(sun_data.energy * 1000.0)
-    result["brightness"] = float(
-        sun_data.energy * 125.0
-    )
+
+    if brightness is not None:
+        result["brightness"] = float(brightness)
+    else:
+        result["brightness"] = float(sun_data.energy * 125.0)
 
     return result
+
+
+# =========================================================
+# Project metadata
+# =========================================================
+
+def get_project_version(scene):
+    try:
+        return int(scene.get("vortex_project_version", 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def get_project_id(scene):
+    """
+    Keep the id from the imported file, so a re-export updates the same
+    place instead of creating a new one.
+    """
+
+    project_id = scene.get("vortex_project_id")
+
+    if isinstance(project_id, str) and project_id:
+        return project_id
+
+    return uuid.uuid4().hex
+
+
+def get_groups(scene):
+    """
+    Groups are preserved as they were imported; Blender has no native
+    equivalent for them.
+    """
+
+    raw = scene.get("vortex_groups_json")
+
+    if not raw:
+        return []
+
+    try:
+        groups = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+
+    return groups if isinstance(groups, list) else []
 
 
 # =========================================================
@@ -380,14 +486,14 @@ class EXPORT_OT_vortex_json(bpy.types.Operator):
         export_data = {}
 
         try:
-            export_data["project_version"] = 1
-            export_data["project_id"] = uuid.uuid4().hex
+            export_data["project_version"] = get_project_version(context.scene)
+            export_data["project_id"] = get_project_id(context.scene)
             export_data["parts"] = [
                 export_object(obj)
                 for obj in objects
             ]
             export_data["lighting"] = get_sun_info()
-            export_data["groups"] = []
+            export_data["groups"] = get_groups(context.scene)
         except Exception as e:
 
             self.report(

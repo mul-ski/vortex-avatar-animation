@@ -186,10 +186,127 @@ def set_custom_property(obj, name, value):
 
 
 # ------------------------------------------------------------------------
+# Project metadata
+# ------------------------------------------------------------------------
+
+def store_project_metadata(data):
+    """
+    Keep the values that describe the whole project, so the exporter can
+    write the same place back out instead of inventing new ones.
+    """
+
+    scene = bpy.context.scene
+
+    scene["vortex_project_version"] = int(
+        data.get("project_version", 1)
+    )
+
+    project_id = data.get("project_id")
+
+    if project_id:
+        scene["vortex_project_id"] = str(project_id)
+    elif "vortex_project_id" in scene:
+        del scene["vortex_project_id"]
+
+    groups = data.get("groups")
+
+    if groups:
+        scene["vortex_groups_json"] = json.dumps(groups)
+    elif "vortex_groups_json" in scene:
+        del scene["vortex_groups_json"]
+
+
+# ------------------------------------------------------------------------
 # Part creation
 # ------------------------------------------------------------------------
 
-def create_part(part, collection=None):
+def create_cube_template():
+    """
+    Build one unit cube and keep its mesh as a template.
+
+    Copying a mesh is much faster than calling the cube operator and the
+    UV operator for every part, and every part starts as the same cube.
+    """
+
+    bpy.ops.mesh.primitive_cube_add(
+        size=1.0,
+        location=(0.0, 0.0, 0.0),
+    )
+
+    template = bpy.context.object.data
+    bpy.data.objects.remove(bpy.context.object, do_unlink=True)
+
+    return template
+
+
+def cube_face_axes(template):
+    """
+    Remember the dominant axis of every face.
+
+    The projection axis depends on the face normal, and scaling the cube
+    by positive dimensions cannot change which axis is dominant.
+    """
+
+    axes = []
+
+    for polygon in template.polygons:
+        axes.append(
+            max(
+                range(3),
+                key=lambda index: abs(polygon.normal[index]),
+            )
+        )
+
+    return axes
+
+
+def build_part_mesh(template, face_axes, dimensions):
+    """
+    Create the scaled cube mesh for one part, including its UVs.
+
+    This reproduces what the old code did with the cube operator and
+    bpy.ops.uv.cube_project(cube_size=1.0): each face is projected along
+    its dominant axis, and the position is offset by half a unit.
+    """
+
+    mesh = template.copy()
+
+    mesh.transform(
+        Matrix.Diagonal(
+            (
+                float(dimensions.x),
+                float(dimensions.y),
+                float(dimensions.z),
+            )
+        ).to_4x4()
+    )
+
+    uv_layer = mesh.uv_layers.active
+
+    if uv_layer is None:
+        uv_layer = mesh.uv_layers.new(name="UVMap")
+
+    uv_data = uv_layer.data
+
+    for polygon, axis in zip(mesh.polygons, face_axes):
+        for loop_index in polygon.loop_indices:
+            coordinate = mesh.vertices[
+                mesh.loops[loop_index].vertex_index
+            ].co
+
+            if axis == 0:
+                uv = (coordinate.y + 0.5, coordinate.z + 0.5)
+            elif axis == 1:
+                uv = (coordinate.x + 0.5, coordinate.z + 0.5)
+            else:
+                uv = (coordinate.x + 0.5, coordinate.y + 0.5)
+
+            uv_data[loop_index].uv = uv
+
+    return mesh
+
+
+def create_part(part, collection=None, template=None, face_axes=None):
     """
     Create one cube from a JSON part definition.
     """
@@ -200,19 +317,24 @@ def create_part(part, collection=None):
     # Create cube
     # ------------------------------------------------------------
 
-    bpy.ops.mesh.primitive_cube_add(
-        size=1.0,
-        location=(0.0, 0.0, 0.0),
-    )
+    dimensions = convert_scale(part["scale"])
 
-    obj = bpy.context.object
-    obj.name = name
+    own_template = template is None
 
-    if collection is not None:
-        # Move object into requested collection.
-        for old_collection in list(obj.users_collection):
-            old_collection.objects.unlink(obj)
+    if own_template:
+        template = create_cube_template()
+        face_axes = cube_face_axes(template)
 
+    mesh = build_part_mesh(template, face_axes, dimensions)
+
+    if own_template:
+        bpy.data.meshes.remove(template)
+
+    obj = bpy.data.objects.new(name, mesh)
+
+    if collection is None:
+        bpy.context.scene.collection.objects.link(obj)
+    else:
         collection.objects.link(obj)
 
     # ------------------------------------------------------------
@@ -222,19 +344,6 @@ def create_part(part, collection=None):
     obj.location = convert_position(part["position"])
     obj.rotation_mode = "QUATERNION"
     obj.rotation_quaternion = convert_rotation(part["rotation"])
-
-    # The JSON "scale" represents dimensions.
-    obj.dimensions = convert_scale(part["scale"])
-
-    # Apply scale so the mesh itself has the requested dimensions.
-    bpy.context.view_layer.objects.active = obj
-    obj.select_set(True)
-
-    bpy.ops.object.transform_apply(
-        location=False,
-        rotation=False,
-        scale=True,
-    )
 
     # ------------------------------------------------------------
     # Color
@@ -278,23 +387,6 @@ def create_part(part, collection=None):
         obj.data.materials.append(material)
 
     # ------------------------------------------------------------
-    # UV cube projection
-    # ------------------------------------------------------------
-
-    bpy.ops.object.mode_set(mode="EDIT")
-
-    bpy.ops.mesh.select_all(action="SELECT")
-
-    bpy.ops.uv.cube_project(
-        cube_size=1.0,
-        correct_aspect=True,
-        clip_to_bounds=False,
-        scale_to_bounds=False,
-    )
-
-    bpy.ops.object.mode_set(mode="OBJECT")
-
-    # ------------------------------------------------------------
     # Shadow visibility
     # ------------------------------------------------------------
 
@@ -305,13 +397,22 @@ def create_part(part, collection=None):
     # Additional JSON data as custom properties
     # ------------------------------------------------------------
 
+    # Older builds read the JSON key with a typo, so a .blend saved
+    # from one of those may still carry "custom_appearence".
+    if (
+        "custom_appearance" not in part
+        and "custom_appearence" in part
+    ):
+        part = dict(part)
+        part["custom_appearance"] = part["custom_appearence"]
+
     custom_properties = (
         "group",
         "anchored",
         "can_collide",
         "spawn_location",
         "baseplate",
-        "custom_appearence",
+        "custom_appearance",
         "truss",
         "textures",
         "point_light",
@@ -391,6 +492,28 @@ def create_sun(lighting, collection=None):
     )
 
     # ------------------------------------------------------------
+    # Ambient light and brightness
+    #
+    # Blender has no direct equivalent, so keep the JSON values on the
+    # sun object for the exporter to write back.
+    # ------------------------------------------------------------
+
+    ambient = lighting.get("ambient_color")
+
+    if ambient:
+        sun["vortex_ambient_color"] = (
+            float(ambient["r"]),
+            float(ambient["g"]),
+            float(ambient["b"]),
+            float(ambient.get("a", 1.0)),
+        )
+
+    brightness = lighting.get("brightness")
+
+    if brightness is not None:
+        sun["vortex_brightness"] = float(brightness)
+
+    # ------------------------------------------------------------
     # Rotation
     # ------------------------------------------------------------
 
@@ -422,6 +545,12 @@ def import_json(filepath):
         data = json.load(file)
 
     # ------------------------------------------------------------
+    # Project metadata
+    # ------------------------------------------------------------
+
+    store_project_metadata(data)
+
+    # ------------------------------------------------------------
     # Create import collection
     # ------------------------------------------------------------
 
@@ -439,11 +568,30 @@ def import_json(filepath):
 
     parts = data.get("parts", [])
 
-    for part in parts:
-        create_part(
-            part,
-            collection=collection,
-        )
+    template = create_cube_template()
+    face_axes = cube_face_axes(template)
+
+    # The old cube operator deselected everything it did not create,
+    # so keep that behaviour instead of adding to the selection.
+    for existing in bpy.context.selected_objects:
+        existing.select_set(False)
+
+    last_part = None
+
+    try:
+        for part in parts:
+            last_part = create_part(
+                part,
+                collection=collection,
+                template=template,
+                face_axes=face_axes,
+            )
+    finally:
+        bpy.data.meshes.remove(template)
+
+    if last_part is not None:
+        last_part.select_set(True)
+        bpy.context.view_layer.objects.active = last_part
 
     # ------------------------------------------------------------
     # Lighting
