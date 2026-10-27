@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "blender_playvortexio_loader"
-version = "0.0.13"
+version = "0.0.14"
 name = "Vortex Loader"
 tagline = "Vortex place import-export and avatar downloader"
 maintainer = "barbq"
