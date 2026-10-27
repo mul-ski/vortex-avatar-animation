@@ -44,18 +44,14 @@ def convert_rotation(quaternion):
     return target_rotation.to_quaternion()
 
 
-def get_json_property(obj, name, default=None):
+def to_python_value(value):
     """
-    Read a custom property that came from the JSON file.
+    Convert a Blender custom property into plain Python data.
 
-    Lists of strings are stored directly, but values Blender cannot
-    represent are stored as JSON text, so decode those again.
+    Nested dictionaries are stored as an IDPropertyGroup, which
+    iterates over its keys, so list() would lose the values. Blender
+    can convert those groups (and their nested arrays) back to a dict.
     """
-
-    if name not in obj:
-        return default
-
-    value = obj[name]
 
     if isinstance(value, str):
         # Only decode values the importer had to store as JSON text.
@@ -68,10 +64,29 @@ def get_json_property(obj, name, default=None):
         except (TypeError, ValueError):
             return value
 
+    to_dict = getattr(value, "to_dict", None)
+
+    if callable(to_dict):
+        return to_dict()
+
     try:
-        return list(value)
+        return [to_python_value(item) for item in value]
     except TypeError:
         return value
+
+
+def get_json_property(obj, name, default=None):
+    """
+    Read a custom property that came from the JSON file.
+
+    Lists of strings are stored directly, but values Blender cannot
+    represent are stored as JSON text, so decode those again.
+    """
+
+    if name not in obj:
+        return default
+
+    return to_python_value(obj[name])
 
 
 def get_color(obj):
@@ -215,11 +230,30 @@ def export_object(obj):
     group = get_json_property(obj, "group")
     textures = get_json_property(obj, "textures", [])
 
+    # Data added by newer project versions (lights, physics, shape) is
+    # preserved as-is. Only write the keys the imported part actually
+    # had, so older places keep their original field list and a null
+    # light stays an explicit null.
+    extra_properties = {}
+
+    for property_name in (
+        "point_light",
+        "spot_light",
+        "shape",
+        "velocity",
+        "angular_velocity",
+    ):
+        if property_name in obj:
+            extra_properties[property_name] = get_json_property(
+                obj,
+                property_name,
+            )
+
     # -----------------------------------------------------
     # JSON object
     # -----------------------------------------------------
 
-    return {
+    part = {
         "name": obj.name,
 
         "position": {
@@ -250,6 +284,10 @@ def export_object(obj):
         "truss": truss,
         "textures": textures,
     }
+
+    part.update(extra_properties)
+
+    return part
 
 
 def find_export_sun():
@@ -446,9 +484,74 @@ def get_groups(scene):
     return groups if isinstance(groups, list) else []
 
 
+def get_instances(scene):
+    """
+    Script instances are preserved as they were imported; Blender has
+    no native equivalent for them.
+    """
+
+    raw = scene.get("vortex_instances_json")
+
+    if raw is None:
+        return None
+
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 # =========================================================
 # Export operator
 # =========================================================
+
+def export_json(filepath, selected_only=True):
+    """
+    Write the selected (or all) mesh objects to a Vortex JSON file.
+
+    Keeping this outside the operator lets the round-trip test run the
+    source modules before the extension is rebuilt.
+    """
+
+    scene = bpy.context.scene
+
+    if selected_only:
+        objects = [
+            obj
+            for obj in bpy.context.selected_objects
+            if obj.type == 'MESH'
+        ]
+    else:
+        objects = [
+            obj
+            for obj in scene.objects
+            if obj.type == 'MESH'
+        ]
+
+    export_data = {
+        "project_version": get_project_version(scene),
+        "project_id": get_project_id(scene),
+        "parts": [
+            export_object(obj)
+            for obj in objects
+        ],
+        "lighting": get_sun_info(),
+        "groups": get_groups(scene),
+    }
+
+    if "vortex_instances_json" in scene:
+        export_data["instances"] = get_instances(scene)
+
+    with open(filepath, "w", encoding="utf-8") as file:
+        json.dump(
+            export_data,
+            file,
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    return len(objects)
+
 
 class EXPORT_OT_vortex_json(bpy.types.Operator):
 
@@ -470,66 +573,21 @@ class EXPORT_OT_vortex_json(bpy.types.Operator):
 
     def execute(self, context):
 
-        if self.selected_only:
-            objects = [
-                obj
-                for obj in context.selected_objects
-                if obj.type == 'MESH'
-            ]
-        else:
-            objects = [
-                obj
-                for obj in context.scene.objects
-                if obj.type == 'MESH'
-            ]
-
-        export_data = {}
-
         try:
-            export_data["project_version"] = get_project_version(context.scene)
-            export_data["project_id"] = get_project_id(context.scene)
-            export_data["parts"] = [
-                export_object(obj)
-                for obj in objects
-            ]
-            export_data["lighting"] = get_sun_info()
-            export_data["groups"] = get_groups(context.scene)
+            count = export_json(
+                self.filepath,
+                selected_only=self.selected_only,
+            )
         except Exception as e:
-
             self.report(
                 {'ERROR'},
                 f"Export failed: {e}"
             )
-
-            return {'CANCELLED'}
-
-        try:
-
-            with open(
-                self.filepath,
-                "w",
-                encoding="utf-8"
-            ) as file:
-
-                json.dump(
-                    export_data,
-                    file,
-                    indent=2,
-                    ensure_ascii=False,
-                )
-
-        except Exception as e:
-
-            self.report(
-                {'ERROR'},
-                f"File export failed: {e}"
-            )
-
             return {'CANCELLED'}
 
         self.report(
             {'INFO'},
-            f"Exported {len(export_data)} object(s)"
+            f"Exported {count} object(s)"
         )
 
         return {'FINISHED'}

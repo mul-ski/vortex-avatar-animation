@@ -215,6 +215,14 @@ def store_project_metadata(data):
     elif "vortex_groups_json" in scene:
         del scene["vortex_groups_json"]
 
+    # Script instances have no Blender equivalent, so keep the original
+    # JSON and write it back unchanged. An empty list is still stored so
+    # the exported file keeps the same shape as the imported one.
+    if "instances" in data:
+        scene["vortex_instances_json"] = json.dumps(data["instances"])
+    elif "vortex_instances_json" in scene:
+        del scene["vortex_instances_json"]
+
 
 # ------------------------------------------------------------------------
 # Part creation
@@ -417,6 +425,9 @@ def create_part(part, collection=None, template=None, face_axes=None):
         "textures",
         "point_light",
         "spot_light",
+        "shape",
+        "velocity",
+        "angular_velocity",
     )
 
     for property_name in custom_properties:
