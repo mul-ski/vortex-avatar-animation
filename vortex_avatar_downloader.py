@@ -132,8 +132,23 @@ def set_material_texture(
 # HTTP STUFF
 
 
+# Keep a lost connection from freezing Blender forever.
+REQUEST_TIMEOUT = 30
+
+
 def get_user_outfit(user_id=95964):
-    return requests.get(f"{constants.API_DOMAIN}/users/outfits?ids={user_id}").json()[str(user_id)]
+    response = requests.get(
+        f"{constants.API_DOMAIN}/users/outfits?ids={user_id}",
+        timeout=REQUEST_TIMEOUT,
+    )
+    response.raise_for_status()
+
+    outfits = response.json()
+
+    if str(user_id) not in outfits:
+        raise ValueError(f"No avatar found for User ID {user_id}")
+
+    return outfits[str(user_id)]
 
 
 def load_clothing_images(clothing_ids):
@@ -155,7 +170,8 @@ def load_clothing_images(clothing_ids):
         ids_as_str = ",".join(map(str, missing_ids))
 
         response = requests.get(
-            f"{constants.API_DOMAIN}/clothing/images?ids={ids_as_str}"
+            f"{constants.API_DOMAIN}/clothing/images?ids={ids_as_str}",
+            timeout=REQUEST_TIMEOUT,
         )
         response.raise_for_status()
 
@@ -179,9 +195,12 @@ def load_clothing_images(clothing_ids):
 def load_accessory_meshes(accessory_ids):
     ids_as_str = ",".join(map(str, accessory_ids))
     accessories = {}
-    accessories_data = requests.get(
-        f"{constants.API_DOMAIN}/meshes?ids={ids_as_str}"
-    ).json()
+    response = requests.get(
+        f"{constants.API_DOMAIN}/meshes?ids={ids_as_str}",
+        timeout=REQUEST_TIMEOUT,
+    )
+    response.raise_for_status()
+    accessories_data = response.json()
     for key, value in accessories_data.items():
         mesh_id = int(key)
 

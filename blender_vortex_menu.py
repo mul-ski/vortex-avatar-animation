@@ -104,7 +104,8 @@ class VORTEXLOADER_OT_load_user_avatar(bpy.types.Operator):
         try:
             spawn_user(user_id)
         except Exception as error:
-            msg = f"Failed to load avatar: {traceback.print_exc()}"
+            traceback.print_exc()
+            msg = f"Failed to load avatar: {error}"
             print(msg)
             self.report({"ERROR"}, msg)
             return {"CANCELLED"}

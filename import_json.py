@@ -643,7 +643,8 @@ class IMPORT_OT_vortex_json(bpy.types.Operator):
         try:
             count = import_json(self.filepath)
         except Exception as error:
-            print(f"Import failed: {traceback.print_exc()}")
+            traceback.print_exc()
+            print(f"Import failed: {error}")
             self.report({"ERROR"}, f"Import failed: {error}")
             return {"CANCELLED"}
 
